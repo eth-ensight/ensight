@@ -2,6 +2,7 @@ const express = require('express');
 const { ethers } = require('ethers');
 const cors = require('cors');
 const redisModule = require('./lib/redis');
+const { validateName, validateAddress, normalizeName, STANDARD_TEXT_KEYS } = require('./lib/ens');
 let redis = redisModule.redis;
 let redisConfigured = redisModule.isConfigured;
 if (global.__ENSIGHT_TEST_REDIS__) {
@@ -41,27 +42,25 @@ if (global.__ENSIGHT_TEST_PROVIDER__) {
  * Resolve ENS name to Ethereum address
  * GET /api/ens/resolve/:name
  * Example: /api/ens/resolve/vitalik.eth
+ * Supports any valid ENS name (including subdomains and DNS TLDs).
  */
 app.get('/api/ens/resolve/:name', async (req, res) => {
   try {
-    const { name } = req.params;
-
-    if (!name || !name.endsWith('.eth')) {
-      return res.status(400).json({
-        error: 'Invalid ENS name. Must end with .eth'
-      });
+    const { valid, normalized, error } = validateName(req.params.name);
+    if (!valid) {
+      return res.status(400).json({ error });
     }
 
-    const address = await provider.resolveName(name);
+    const address = await provider.resolveName(normalized);
 
     if (!address) {
       return res.status(404).json({
-        error: `ENS name "${name}" not found or not resolved`
+        error: `ENS name "${normalized}" not found or not resolved`
       });
     }
 
     res.json({
-      name,
+      name: normalized,
       address,
       success: true
     });
@@ -80,14 +79,11 @@ app.get('/api/ens/resolve/:name', async (req, res) => {
  */
 app.get('/api/ens/reverse/:address', async (req, res) => {
   try {
-    const { address } = req.params;
-
-    // Validate Ethereum address
-    if (!ethers.isAddress(address)) {
-      return res.status(400).json({
-        error: 'Invalid Ethereum address'
-      });
+    const { valid, error } = validateAddress(req.params.address);
+    if (!valid) {
+      return res.status(400).json({ error });
     }
+    const address = req.params.address;
 
     const name = await provider.lookupAddress(address);
 
@@ -119,23 +115,21 @@ app.get('/api/ens/reverse/:address', async (req, res) => {
  * Get text record from ENS name
  * GET /api/ens/text/:name/:key
  * Example: /api/ens/text/vitalik.eth/url
- * Common keys: url, email, description, avatar, etc.
+ * Common keys: url, email, description, com.twitter, com.github, etc.
  */
 app.get('/api/ens/text/:name/:key', async (req, res) => {
   try {
-    const { name, key } = req.params;
-
-    if (!name || !name.endsWith('.eth')) {
-      return res.status(400).json({
-        error: 'Invalid ENS name. Must end with .eth'
-      });
+    const { valid, normalized, error } = validateName(req.params.name);
+    if (!valid) {
+      return res.status(400).json({ error });
     }
 
-    const resolver = await provider.getResolver(name);
+    const { key } = req.params;
+    const resolver = await provider.getResolver(normalized);
 
     if (!resolver) {
       return res.status(404).json({
-        error: `No resolver found for "${name}"`
+        error: `No resolver found for "${normalized}"`
       });
     }
 
@@ -143,12 +137,12 @@ app.get('/api/ens/text/:name/:key', async (req, res) => {
 
     if (!text) {
       return res.status(404).json({
-        error: `Text record "${key}" not found for "${name}"`
+        error: `Text record "${key}" not found for "${normalized}"`
       });
     }
 
     res.json({
-      name,
+      name: normalized,
       key,
       value: text,
       success: true
@@ -168,19 +162,16 @@ app.get('/api/ens/text/:name/:key', async (req, res) => {
  */
 app.get('/api/ens/avatar/:name', async (req, res) => {
   try {
-    const { name } = req.params;
-
-    if (!name || !name.endsWith('.eth')) {
-      return res.status(400).json({
-        error: 'Invalid ENS name. Must end with .eth'
-      });
+    const { valid, normalized, error } = validateName(req.params.name);
+    if (!valid) {
+      return res.status(400).json({ error });
     }
 
-    const resolver = await provider.getResolver(name);
+    const resolver = await provider.getResolver(normalized);
 
     if (!resolver) {
       return res.status(404).json({
-        error: `No resolver found for "${name}"`
+        error: `No resolver found for "${normalized}"`
       });
     }
 
@@ -188,12 +179,12 @@ app.get('/api/ens/avatar/:name', async (req, res) => {
 
     if (!avatar) {
       return res.status(404).json({
-        error: `No avatar found for "${name}"`
+        error: `No avatar found for "${normalized}"`
       });
     }
 
     res.json({
-      name,
+      name: normalized,
       avatar: avatar.url,
       success: true
     });
@@ -209,28 +200,26 @@ app.get('/api/ens/avatar/:name', async (req, res) => {
  * Get comprehensive ENS information for a name
  * GET /api/ens/info/:name
  * Example: /api/ens/info/vitalik.eth
+ * Returns address, resolver, avatar, and all standard text records.
  */
 app.get('/api/ens/info/:name', async (req, res) => {
   try {
-    const { name } = req.params;
-
-    if (!name || !name.endsWith('.eth')) {
-      return res.status(400).json({
-        error: 'Invalid ENS name. Must end with .eth'
-      });
+    const { valid, normalized, error } = validateName(req.params.name);
+    if (!valid) {
+      return res.status(400).json({ error });
     }
 
-    const resolver = await provider.getResolver(name);
-    const address = await provider.resolveName(name);
+    const resolver = await provider.getResolver(normalized);
+    const address = await provider.resolveName(normalized);
 
     if (!address) {
       return res.status(404).json({
-        error: `ENS name "${name}" not found or not resolved`
+        error: `ENS name "${normalized}" not found or not resolved`
       });
     }
 
     const info = {
-      name,
+      name: normalized,
       address,
       resolver: resolver ? resolver.address : null,
     };
@@ -244,11 +233,10 @@ app.get('/api/ens/info/:name', async (req, res) => {
         info.avatar = null;
       }
 
-      // Get common text records
-      const textKeys = ['url', 'email', 'description', 'twitter', 'github'];
+      // Fetch all standard text records (including namespaced social keys)
       info.textRecords = {};
 
-      for (const key of textKeys) {
+      for (const key of STANDARD_TEXT_KEYS) {
         try {
           const value = await resolver.getText(key);
           if (value) {
